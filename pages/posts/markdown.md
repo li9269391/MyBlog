@@ -1,9 +1,9 @@
 ---
-title: Markdown Examples
-date: 2021/3/19
-description: View examples of all possible Markdown options.
-tag: web development
-author: You
+title: Markdown 示例
+date: 2023/1/29
+description: Markdown 常用语法指南，玩转 Markdown 文档排版规范。
+tag: Markdown
+author: 后浪
 ---
 
 # Markdown Examples
@@ -48,7 +48,7 @@ Ordered
 
 Inline `code`
 
-```
+``` jsx
 export default function Nextra({ Component, pageProps }) {
   return (
     <>
