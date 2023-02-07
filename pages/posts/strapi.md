@@ -18,19 +18,54 @@ author: 后浪
 - 安装 [Docker](https://www.docker.com/)
 - 安装（可选，推荐）[Docker Compose](https://docs.docker.com/compose/)
 
-## 1、使用 Strapi 官方 cli 脚手架创建项目
+## 一、创建项目
+
+使用 Strapi 官方 cli 脚手架创建，根据提示输入即可，演示选择的数据库 client 为 mysql
 
 运行命令：`npx create-strapi-app@4.6.0 my-strapi-project`
 
 > 想体验最新版本，把命令中的 @4.6.0 去掉即可\
 > 提示：先确保已安装 node.js，再运行 npx 命令
 
-## 2、创建生产版本的 dockerfile 文件
 
-> 涉及切换阿里源很重要 `sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories`\
-> 因为默认的 apk add 源是在国外服务器，如你的机器没有代理，在国内很慢导致超时失败，这也是官方教程卡住新手的一个致命原因。另外，单个 dokcerfile 中引用多个  FROM 基础镜像时要设置源多次
+![创建项目.png](/images/npx-create.png)
+
+创建完成，关于数据库部分的配置，还可以在 ./config/database.ts 和环境变量中进行修改
+
+## 二、创建 dockerfile 文件
+
+> apk add 时切换阿里源很重要 `sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories`\
+> 因为默认的 apk add 源是在国外服务器，如你的机器没有代理，在国内很慢导致超时失败，这也是官方教程卡住新手的一个致命原因。另外，单个 dokcerfile 中引用多个 FROM 基础镜像时（多阶段构建），要设置源多次。
+
+- 本地开发用到的：
+
 ```bash
-# path: ./Dockerfile.prod
+# path: ./Dockerfile
+
+FROM node:16-alpine
+# Installing libvips-dev for sharp Compatibility
+RUN sed -i 's/dl-cdn.alpinelinux.org/mirrors.aliyun.com/g' /etc/apk/repositories && apk update && apk add --no-cache build-base gcc autoconf automake zlib-dev libpng-dev nasm bash vips-dev
+ARG NODE_ENV=development
+ENV NODE_ENV=${NODE_ENV}
+WORKDIR /opt/
+COPY ./package.json ./package-lock.json ./
+ENV PATH /opt/node_modules/.bin:$PATH
+RUN npm install
+WORKDIR /opt/app
+COPY ./ .
+RUN npm run build
+EXPOSE 1337
+# 启动开发模式
+CMD ["npm", "run", "develop"]
+
+```
+> 提醒：[Strapi 规定了定义数据模型（API, Content-Type Builder）方式](https://docs.strapi.io/developer-docs/latest/getting-started/troubleshooting.html#why-can-t-i-create-or-update-content-types-in-production-staging)，只允许在访问开发模式（npm run develop）下进行，创建的模型配置会存储在 ./src/api/ 目录，开发完成，部署生产时需要重新构建镜像。
+
+
+- 生产环境用到的：
+
+```bash
+# path: ./Dockerfile.prod 生产环境
 
 FROM node:16-alpine as build
 # Installing libvips-dev for sharp Compatibility
@@ -60,7 +95,7 @@ CMD ["npm", "run","start"]
 
 ```
 
-创建 .dockerignore 文件，用来在 build 的时候排除一些多余的大文件 copy 到镜像系统中，加快构建速度与减少镜像体积
+另外再创建 .dockerignore 文件，用来在 build 的时候排除一些多余的大文件 copy 到镜像系统中，加快构建速度与减少镜像体积
 
 ```bash
 # path: ./.dockerignore
@@ -70,22 +105,27 @@ dist
 build
 ```
 
-## 3、根据 dockerfile，打包构建 docker 系统镜像
+## 三、构建 docker 镜像
 
-运行命令：`docker build --build-arg NODE_ENV=production -t strapiapp:latest -f Dockerfile.prod .`
+> 为了加速 docker 镜像构建，推荐 docker 国内源设置，[参考](https://blog.51cto.com/echohye/5605743)
+
+构建本地开发模式镜像，在项目根目录，运行：\
+`docker build -t strapiapp:dev .`
+
+构建生产模式镜像，运行：\
+`docker build --build-arg NODE_ENV=production -t strapiapp:latest -f Dockerfile.prod .`
 
 > 参数说明： \
 >--build-arg 打包时的环境变量设置 \
 >-t 定义镜像名及版本 \
->-f 文件位置，如果名为 Dockerfile 可忽略不写
-> 
-构建成功，运行命令 `docker images` 查看本地镜像信息
+>-f 文件位置，如果名为 Dockerfile 可忽略不写\
+>. 末尾小数点为路径，不可缺少
 
-## 4、创建 docker-compose.yml 文件
+构建成功，运行命令 `docker images` 查看镜像信息
 
-> 使用 docker-compose.ym 好处是，方便快速管理（启动及停止）项目服务，包括用于启动数据库容器（本文选择 mysql 数据库演示）\
-> 相比直接运行 `docker run` 镜像时，后面要写一堆的参数。\
-> 有关运行 Docker compose 及其命令的更多信息，请参阅 [Docker Compose 文档](https://docs.docker.com/compose/)
+## 四、创建 docker-compose.yml 文件
+
+> compose 负责实现对 Docker 容器集群的快速编排。相比使用 `docker run` 运行方便太多了
 
 ```bash
 
@@ -95,15 +135,12 @@ version: '3'
 services:
   strapi:
     container_name: strapi
-    build:
-      context: ./
-      dockerfile: Dockerfile.prod
-    image: strapiapp:latest # 上一步对应的镜像名及版本，本地没有会取远程
+    image: strapiapp:dev # 镜像，生产环境则为 strapiapp:latest 
     restart: unless-stopped
     env_file: .env
     environment:
       DATABASE_CLIENT: ${DATABASE_CLIENT}
-      DATABASE_HOST: strapiDB # 同个机器的数据服务，自动选当前内网IP
+      DATABASE_HOST: strapiDB # 容器互联。如果云服务器内网 IP 变更导致连接不上，改用固定 IP
       DATABASE_PORT: ${DATABASE_PORT}
       DATABASE_NAME: ${DATABASE_NAME}
       DATABASE_USERNAME: ${DATABASE_USERNAME}
@@ -114,7 +151,7 @@ services:
       NODE_ENV: ${NODE_ENV}
     volumes:
       - ./config:/opt/app/config
-      #- ./src:/opt/app/src # 项目采有 ts，要打包编译后才能使用，所以无需映射此目录
+      - ./src:/opt/app/src # 创建的内容类型会存放在 src/api
       - ./package.json:/opt/app/package.json
       - ./package-lock.json:/opt/app/package-lock.json
       - ./.env:/opt/app/.env
@@ -139,7 +176,7 @@ services:
       MYSQL_PASSWORD: ${DATABASE_PASSWORD}
       MYSQL_DATABASE: ${DATABASE_NAME}
     volumes:
-      - strapi-data:/var/lib/mysql # 默认路径指向主机的 /var/lib/docker/volumes/
+      - strapi-data:/var/lib/mysql # 挂载数据卷
       #- ./data:/var/lib/mysql
     ports:
       - '3306:3306'
@@ -147,7 +184,7 @@ services:
       - strapi
 
 volumes:
-  strapi-data:
+  strapi-data: # 创建数据卷，数据持久化在主机，即使删除容器也不受影响
 
 networks:
   strapi:
@@ -156,40 +193,83 @@ networks:
     
 ```
 
-## 5、编辑 .env 文件，配置使用到的环境变量
-
-项目 .gitignore 已忽略 .env 文件，当 git 提交项目后，需要在部署机器创建 .env 文件或设置环境变量（如 \~/.bash_profile、\~/.zshrc、\~/.profile 或 \~/.bashrc），因为变量涉及数据库的用户及密码，通常由 DB 运维人员管理分配，本地开发不允许连接生产数据库
-
-参考示例：
+如果数据库在其它机器，提前创建好用户与数据库，就不需要数据服务容器，去掉即可，如下：
 
 ```bash
+
+# path: ./docker-compose.yml
+
+version: '3'
+services:
+  strapi:
+    container_name: strapi
+    build:
+      context: ./
+      dockerfile: Dockerfile # 如果 image 不存在，构建一个新镜像并使用
+    image: strapiapp:dev     # 开发镜像
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_CLIENT: ${DATABASE_CLIENT}
+      DATABASE_HOST: ${DATABASE_HOST}
+      DATABASE_PORT: ${DATABASE_PORT}
+      DATABASE_NAME: ${DATABASE_NAME}
+      DATABASE_USERNAME: ${DATABASE_USERNAME}
+      DATABASE_PASSWORD: ${DATABASE_PASSWORD}
+      JWT_SECRET: ${JWT_SECRET}
+      ADMIN_JWT_SECRET: ${ADMIN_JWT_SECRET}
+      APP_KEYS: ${APP_KEYS}
+      NODE_ENV: ${NODE_ENV}
+    volumes:
+      - ./config:/opt/app/config
+      - ./src:/opt/app/src # 创建的内容类型会存放在 src/api
+      - ./package.json:/opt/app/package.json
+      - ./package-lock.json:/opt/app/package-lock.json
+      - ./.env:/opt/app/.env
+      - ./public/uploads:/opt/app/public/uploads
+    ports:
+      - '1337:1337'
+
+```
+
+
+## 五、设置项目环境变量
+
+编辑 .env 文件，配置使用到的[环境变量](https://docs.strapi.io/developer-docs/latest/setup-deployment-guides/installation/docker.html#development-and-or-staging-environments)
+
+> 注意：项目 .gitignore 已忽略 .env 文件，当 git 提交项目后，需要在部署机器创建 .env 文件或设置环境变量（如 \~/.bash_profile、\~/.zshrc、\~/.profile 或 \~/.bashrc），因为本地开发数据库与生产环境不同，通常由 DB 运维人员管理分配
+
+示例：
+
+```bash
+# path ./.env
 
 APP_KEYS=leu+LeJZr5MueotcWIalKQ==,LekHoo565qnz9cNg8QnUnw==,uXWIERdMDEbsGvWLaL5RlA==,w2GXZx01hx6PGBkENrKstw==
 API_TOKEN_SALT=eMHMayDIGVKmJQRkktXPdw==
 JWT_SECRET=aAciVzAdiGYPa1Z4wMwEqw==
 ADMIN_JWT_SECRET=gpaiVzAdiGYPa1Z4wMwEqw==
 DATABASE_CLIENT=mysql
-DATABASE_HOST=0.0.0.0
+DATABASE_HOST=localhost
 DATABASE_PORT=3306
-DATABASE_NAME=strapi
-DATABASE_USERNAME=root
-DATABASE_PASSWORD=Strapi123
-NODE_ENV=production
+DATABASE_NAME=strapidev
+DATABASE_USERNAME=strapidev
+DATABASE_PASSWORD=strapidev
+NODE_ENV=development
 
 ```
 
-## 6、容器启动
+## 六、容器启动
 
-运行命令 `docker-compose up -d`
+启动 `docker-compose up -d`\
+停止 `docker-compose down`
+
 > -d 参数表示后台运行，通常调试的时候先不加上，可以看到容器报错信息\
-> 命令 `docker-compose down` 则是停止容器运行
+> -f 指定配置文件，如：`docker-compose -f docker-compose.prod.yml up -d`\
+> 有关运行 Docker compose 及其命令的更多信息，请参阅 [Docker Compose 文档](https://docs.docker.com/compose/)
+>
 
-## 7、创建初始数据库
-
-数据容器运行，并不会自动帮你创建数据库，首次需要自己连接数据库，创建以配置的环境变量 `${DATABASE_NAME}` 名，对应的数据库
-
-## 8、一切就绪
+## 七、一切就绪
 
 访问 http://your_IP:1337/admin 进行注册平台超级管理员账号，创建完成务必记住它！
 
-然后你可以愉快的玩爽 Strapi 了，如替换后台语言为中文~
+然后你可以愉快的玩爽 Strapi 了，如[设置 admin 后台语言环境](https://docs.strapi.io/developer-docs/latest/development/admin-customization.html#configuration-options)为中文~
